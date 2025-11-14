@@ -1,4 +1,4 @@
-# model.py (Final, Fully Corrected Code with Path Fix)
+# model.py (Final, Optimized Code with XGBoost and Urgency Score)
 
 import pandas as pd
 import numpy as np
@@ -6,7 +6,7 @@ import re
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import GradientBoostingClassifier
+from xgboost import XGBClassifier  # <--- FINAL HIGH-PERFORMANCE CLASSIFIER
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 import joblib
 import os
@@ -29,11 +29,15 @@ MAX_EMAIL_LENGTH = 2000
 
 # --- Dataset Paths (CORRECTED PHISHING FILE PATH) ---
 DATASET_PATH = "data/dataset.csv"
-PHISHING_DATASET_PATH = "data/Phishing_Email.csv"  # <--- CORRECTED FILENAME (Case Sensitive)
+PHISHING_DATASET_PATH = "data/Phishing_Email.csv"
 MODEL_PATH = "models/phishing_detection_model.pkl"
 
-# Define global_numeric_cols to store the features used in training for consistency
-global_numeric_cols = []
+# Urgency keywords for a new feature
+URGENCY_KEYWORDS = [
+    "immediate", "urgent", "required", "action now", "expire", "suspend",
+    "warning", "security alert", "violates", "failed", "unauthorized",
+    "click here", "don't miss", "last chance", "act now", "reply within"
+]
 
 # --- Column Mapping for Unification ---
 COLUMN_MAPPING = {
@@ -82,8 +86,9 @@ def extract_additional_features(df):
             re.findall(r'[!$%^&*()_+|~=`{}\[\]:";\'<>?,./]', str(row['email_text']))), axis=1
     )
 
-    # 4. Retain HTML tags count
-    df['html_tags'] = df['email_text'].apply(lambda x: len(re.findall(r'<[^>]+>', str(x).lower())))
+    # 4. Retain HTML tags count (Optimized to count specific structural tags)
+    tag_pattern = re.compile(r'<(table|div|img|p|a|script|iframe)', re.IGNORECASE)
+    df['html_tags'] = df['email_text'].apply(lambda x: len(re.findall(tag_pattern, str(x))))
 
     # 5. Fill NA and ROBUST TYPE CONVERSION for new numeric features
     new_numeric_cols = [
@@ -96,6 +101,10 @@ def extract_additional_features(df):
         if col in df.columns:
             # CRITICAL FIX: Convert mixed types to numeric, coercing errors to NaN, then fill
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+
+    # 6. Calculate Urgency Score (NEW FEATURE)
+    urgency_pattern = re.compile('|'.join(re.escape(k) for k in URGENCY_KEYWORDS), re.IGNORECASE)
+    df['urgency_score'] = df['email_text'].apply(lambda x: len(re.findall(urgency_pattern, str(x))))
 
     return df
 
@@ -112,7 +121,6 @@ def load_and_prepare_dataset():
     df = df_main.copy()
 
     # --- CRITICAL FIX 1: Ensure primary DF text columns are strings ---
-    # Solves the "can only concatenate str (not "int") to str" error if it happens on df_main
     df['email_text'] = df['email_text'].astype(str)
     if 'subject' in df.columns:
         df['subject'] = df['subject'].astype(str)
@@ -125,7 +133,6 @@ def load_and_prepare_dataset():
         df_phish.rename(columns=COLUMN_MAPPING, inplace=True)
 
         # --- CRITICAL FIX 2: Ensure rich DF text columns are strings ---
-        # Solves the "can only concatenate str (not "int") to str" error if it happens on df_phish
         df_phish['email_text'] = df_phish['email_text'].astype(str)
         if 'subject' in df_phish.columns:
             df_phish['subject'] = df_phish['subject'].astype(str)
@@ -175,21 +182,21 @@ def train_model_sync():
 
         print(f"Train: {len(train_df)}, Validation: {len(val_df)}, Test: {len(test_df)}")
 
-        # TF-IDF (Enhanced with Bigrams)
+        # TF-IDF (Optimized for Trigrams and higher vocabulary)
         tfidf_vectorizer = TfidfVectorizer(
-            max_features=20000,
+            max_features=40000,  # Increased vocabulary size
             stop_words='english',
-            ngram_range=(1, 3)
+            ngram_range=(1, 3)  # Includes Unigrams, Bigrams, and Trigrams
         )
         X_train_text = tfidf_vectorizer.fit_transform(train_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_val_text = tfidf_vectorizer.transform(val_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_test_text = tfidf_vectorizer.transform(test_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
 
-        # Define all required numeric features
+        # Define all required numeric features (including the new urgency score)
         required_numeric_cols = [
             'email_length', 'subject_length', 'link_density', 'special_chars',
             'html_tags', 'email_count', 'keyword_count', 'misspelled_words_count',
-            'subject_keyword_count'
+            'subject_keyword_count', 'urgency_score'  # <--- NEW FEATURE INCLUDED
         ]
 
         global_numeric_cols = [col for col in required_numeric_cols if col in df.columns]
@@ -210,14 +217,13 @@ def train_model_sync():
         X_val = hstack([X_val_text, X_val_numeric])
         X_test = hstack([X_test_text, X_test_numeric])
 
-        # Classifier (Adjusted Hyperparameters)
-        clf = GradientBoostingClassifier(
+        # Classifier (FINAL OPTIMIZATION: XGBoost)
+        clf = XGBClassifier(
             n_estimators=500,
-            learning_rate=0.03,
+            learning_rate=0.05,
             max_depth=7,
-            random_state=42,
-            subsample=0.8,
-            max_features='sqrt'
+            eval_metric='logloss',  # Standard setting for binary classification
+            random_state=42
         )
         clf.fit(X_train, train_df['label'])
         print("✅ Model trained successfully")
@@ -288,7 +294,8 @@ def predict_email(text):
 
         # Add placeholders for new features
         for col in global_numeric_cols:
-            if col not in ['email_length', 'subject_length', 'link_density', 'special_chars', 'html_tags']:
+            if col not in ['email_length', 'subject_length', 'link_density', 'special_chars', 'html_tags',
+                           'urgency_score']:  # Added urgency_score here too
                 data_row[col] = 0
 
         df = pd.DataFrame([data_row])
