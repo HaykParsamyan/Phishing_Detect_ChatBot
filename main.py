@@ -16,6 +16,8 @@ if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
     sys.exit(1)
 
 
+
+
 def main():
     print("--- Phishing Detector Bot ---")
 
