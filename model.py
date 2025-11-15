@@ -116,36 +116,44 @@ def start_background_training():
         thread.start()
 
 
-def predict_email(text):
-    """Predicts the label for a given email text."""
+# model.py - UPDATED predict_email function
+
+# ... (rest of the code above this function remains the same)
+
+def predict_email(text, custom_threshold=0.35):  # <-- Add custom_threshold parameter
+    """Predicts the label for a given email text using a custom threshold."""
     if training_in_progress or clf is None or tfidf_vectorizer is None or scaler is None:
         return "Model is not fully initialized (training in progress or failed to load/train).", 0, 0
 
     try:
+        # 1. Prepare data row and Feature Extraction (No Change)
         data_row = {'email_text': text, 'subject': '', 'links_count': 0, 'email_length_csv': np.nan,
                     'special_chars_csv': np.nan, 'subject_length_csv': np.nan}
-
         for col in GLOBAL_NUMERIC_COLS:
             if col not in data_row:
                 data_row[col] = 0
-
         df = pd.DataFrame([data_row])
-
-        # Feature Extraction
         df = extract_additional_features(df)
 
-        # Transformation
+        # 2. Transformation (No Change)
         X_text = tfidf_vectorizer.transform([text[:MAX_EMAIL_LENGTH]])
         X_numeric = scaler.transform(df[GLOBAL_NUMERIC_COLS].values)
-
         X_combined = hstack([X_text, X_numeric])
 
-        # Prediction
-        pred = clf.predict(X_combined)[0]
+        # 3. Prediction and Custom Threshold Application
+        # Get the probability array for the combined features
         proba = clf.predict_proba(X_combined)[0]
 
+        # Get the index of the 'phishing' class (which is 1)
+        phishing_class_index = list(clf.classes_).index(1)
+        phishing_probability = proba[phishing_class_index]
+
+        # Apply the custom threshold to classify
+        pred = 1 if phishing_probability >= custom_threshold else 0
+
+        # 4. Calculate probabilities (for display)
         safe_prob = proba[list(clf.classes_).index(0)] * 100 if 0 in clf.classes_ else 0
-        phishing_prob = proba[list(clf.classes_).index(1)] * 100 if 1 in clf.classes_ else 0
+        phishing_prob = phishing_probability * 100
 
         return ('phishing' if pred == 1 else 'legitimate', phishing_prob, safe_prob)
 

@@ -7,7 +7,6 @@ import os
 import csv
 import warnings
 
-# Filter DtypeWarning from pandas when reading CSVs with mixed types
 warnings.filterwarnings('ignore', category=pd.errors.DtypeWarning)
 csv.field_size_limit(2 ** 31 - 1)
 
@@ -15,16 +14,16 @@ csv.field_size_limit(2 ** 31 - 1)
 DATASET_PATH = "data/dataset.csv"
 PHISHING_DATASET_PATH = "data/Phishing_Email.csv"
 CEAS_DATASET_PATH = "data/CEAS_08.csv"
+PHISHING_URLS_DATASET_PATH = "data/phishing_site_urls.csv"  # <--- UPDATED FILENAME
 MAX_EMAIL_LENGTH = 2000
 
-# Urgency keywords for feature engineering
 URGENCY_KEYWORDS = [
     "immediate", "urgent", "required", "action now", "expire", "suspend",
     "warning", "security alert", "violates", "failed", "unauthorized",
     "click here", "don't miss", "last chance", "act now", "reply within"
 ]
 
-# Column Mappings
+# Column Mappings for Email Datasets
 COLUMN_MAPPING = {
     'Email Text': 'email_text', 'Email Type': 'label', 'URL Count': 'links_count',
     'Email Length': 'email_length_csv', 'Punctuation Count': 'special_chars_csv',
@@ -33,18 +32,48 @@ COLUMN_MAPPING = {
     'Misspelled Words Count': 'misspelled_words_count', 'Subject Keyword Count': 'subject_keyword_count',
 }
 
+# Mapping for the CEAS Dataset
 CEAS_COLUMN_MAPPING = {
     'body': 'email_text',
     'subject': 'subject',
     'label': 'label',
 }
 
-# Define the set of features the model will use (for consistency)
+# Mapping for the Phishing URL Dataset (Uses the provided headers: URL and Label)
+URL_COLUMN_MAPPING = {
+    'URL': 'email_text',
+    'Label': 'label',
+}
+
+# Define the set of features the model will use
 GLOBAL_NUMERIC_COLS = [
     'email_length', 'subject_length', 'link_density', 'special_chars',
     'html_tags', 'email_count', 'keyword_count', 'misspelled_words_count',
-    'subject_keyword_count', 'urgency_score'
+    'subject_keyword_count', 'urgency_score', 'link_anomaly_score'
 ]
+
+
+def is_url_suspicious(url):
+    """Calculates a suspicious score based on URL structure."""
+    if not isinstance(url, str):
+        return 0
+
+    score = 0
+    url_lower = url.lower()
+
+    # 1. IP Address Check
+    if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', url_lower):
+        score += 2
+
+    # 2. URL Shortener Check
+    if any(s in url_lower for s in ['bit.ly', 'tinyurl', 'goo.gl', 't.co']):
+        score += 1
+
+        # 3. Use of the @ symbol
+    if '@' in url_lower:
+        score += 3
+
+    return min(score, 5)
 
 
 def extract_additional_features(df):
@@ -67,50 +96,87 @@ def extract_additional_features(df):
     tag_pattern = re.compile(r'<(table|div|img|p|a|script|iframe)', re.IGNORECASE)
     df['html_tags'] = df['email_text'].apply(lambda x: len(re.findall(tag_pattern, str(x))))
 
+    # Fill NaNs for existing numeric columns from CSVs
     new_numeric_cols = ['email_count', 'keyword_count', 'misspelled_words_count', 'subject_keyword_count']
     for col in new_numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
 
+    # Urgency Score
     urgency_pattern = re.compile('|'.join(re.escape(k) for k in URGENCY_KEYWORDS), re.IGNORECASE)
     df['urgency_score'] = df['email_text'].apply(lambda x: len(re.findall(urgency_pattern, str(x))))
+
+    # Link Anomaly Score
+    df['link_anomaly_score'] = df['email_text'].apply(lambda x:
+                                                      max([is_url_suspicious(url) for url in
+                                                           re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+',
+                                                                      str(x))] or [0])
+                                                      if pd.notnull(x) else 0)
 
     return df
 
 
 def load_and_prepare_dataset():
-    """Loads, merges, and prepares all three datasets."""
+    """Loads, merges, and prepares all four datasets."""
 
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Primary dataset not found at {DATASET_PATH}.")
 
-    dataframes = []
     canonical_cols = list(COLUMN_MAPPING.values())
 
+    # --- load_df function with robustness fixes (encoding and tokenization) ---
     def load_df(path, mapping, name):
         if os.path.exists(path):
-            try:
-                df = pd.read_csv(path)
-                print(f"Loaded rows ({name}): {len(df)}")
-                df.rename(columns=mapping, inplace=True)
-                df['email_text'] = df['email_text'].astype(str)
-                if 'subject' in df.columns:
-                    df['subject'] = df['subject'].astype(str)
-                return df.dropna(subset=['email_text', 'label'])
-            except Exception as e:
-                print(f"Warning: Could not load {name}. Error: {e}")
+            print(f"Attempting to load {name} from {path}...")
+            encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
+
+            for encoding in encodings_to_try:
+                try:
+                    df = pd.read_csv(
+                        path,
+                        encoding=encoding,
+                        engine='python',
+                        on_bad_lines='skip'
+                    )
+
+                    print(f"Successfully loaded {name} with encoding: {encoding}. Rows: {len(df)}")
+
+                    df.rename(columns=mapping, inplace=True)
+
+                    df['email_text'] = df['email_text'].astype(str)
+                    if 'subject' in df.columns:
+                        df['subject'] = df['subject'].astype(str)
+
+                    return df.dropna(subset=['email_text', 'label'])
+
+                except (UnicodeDecodeError, KeyError) as e:
+                    if isinstance(e, KeyError):
+                        print(f"Warning: Column mapping failed for {name}. Check column names in the CSV file.")
+                        break
+                    print(f"Failed to load {name} with {encoding} due to Unicode error. Trying next...")
+                except Exception as e:
+                    print(f"Warning: Could not load {name}. Unexpected Error: {e}")
+                    break
+
         return pd.DataFrame()
 
+    # --- Loading all 4 datasets ---
     df_main = load_df(DATASET_PATH, COLUMN_MAPPING, "dataset.csv")
     df_phish = load_df(PHISHING_DATASET_PATH, COLUMN_MAPPING, "Phishing_Email.csv")
     df_ceas = load_df(CEAS_DATASET_PATH, CEAS_COLUMN_MAPPING, "CEAS_08.csv")
+    df_urls = load_df(PHISHING_URLS_DATASET_PATH, URL_COLUMN_MAPPING, "phishing_site_urls.csv")
 
-    dataframes = [df_main, df_phish, df_ceas]
+    dataframes = [df_main, df_phish, df_ceas, df_urls]
 
+    # Concatenate all datasets
     df = pd.concat([d.reindex(columns=canonical_cols) for d in dataframes], ignore_index=True)
 
     df.drop_duplicates(subset=['email_text'], inplace=True)
-    df['label'] = df['label'].astype(str).str.lower().apply(lambda x: 1 if 'phishing' in x else 0)
+
+    # Map all negative indicators (phishing, spam, bad, 1) to the positive class (1) <--- UPDATED LABEL LOGIC
+    df['label'] = df['label'].astype(str).str.lower().apply(
+        lambda x: 1 if ('phishing' in x) or ('spam' in x) or ('bad' in x) or (x == '1') else 0)
+
     df = extract_additional_features(df)
     df.dropna(subset=['email_text', 'label'], inplace=True)
 
