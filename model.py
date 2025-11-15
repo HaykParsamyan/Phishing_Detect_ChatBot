@@ -1,4 +1,4 @@
-# model.py (The Training Orchestrator)
+# model.py (The Training and Prediction Orchestrator)
 
 import pandas as pd
 import numpy as np
@@ -15,7 +15,7 @@ import threading
 from features import load_and_prepare_dataset, extract_additional_features, MAX_EMAIL_LENGTH, GLOBAL_NUMERIC_COLS
 from metrics import evaluate_model
 
-# Global variables (used by bot.py)
+# Global variables
 clf = None
 tfidf_vectorizer = None
 scaler = None
@@ -26,26 +26,26 @@ MODEL_PATH = "models/phishing_detection_model.pkl"
 # --- Training and Prediction Core Logic ---
 
 def train_model_sync():
-    """Synchronous function to perform the entire training pipeline."""
+    """Synchronous function to perform the entire ML training pipeline."""
     global clf, tfidf_vectorizer, scaler, training_in_progress
 
     print("\n--- Starting Model Training ---")
     try:
         df = load_and_prepare_dataset()
 
-        # Split data for training, validation, and testing
+        # Data Split: 80% Train, 10% Validation, 10% Test
         train_df, temp_df = train_test_split(df, test_size=0.2, random_state=42, stratify=df['label'])
         val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42, stratify=temp_df['label'])
 
         print(f"Train: {len(train_df)}, Validation: {len(val_df)}, Test: {len(test_df)}")
 
-        # TF-IDF Transformation
+        # 1. TF-IDF Text Transformation
         tfidf_vectorizer = TfidfVectorizer(max_features=40000, stop_words='english', ngram_range=(1, 3))
         X_train_text = tfidf_vectorizer.fit_transform(train_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_val_text = tfidf_vectorizer.transform(val_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_test_text = tfidf_vectorizer.transform(test_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
 
-        # Scaling Numeric Features
+        # 2. Scaling Numeric Features
         X_train_numeric = train_df[GLOBAL_NUMERIC_COLS].values
         X_val_numeric = val_df[GLOBAL_NUMERIC_COLS].values
         X_test_numeric = test_df[GLOBAL_NUMERIC_COLS].values
@@ -55,23 +55,23 @@ def train_model_sync():
         X_val_numeric = scaler.transform(X_val_numeric)
         X_test_numeric = scaler.transform(X_test_numeric)
 
-        # Combine Features
+        # 3. Combine Features
         X_train = hstack([X_train_text, X_train_numeric])
         X_val = hstack([X_val_text, X_val_numeric])
         X_test = hstack([X_test_text, X_test_numeric])
 
-        # Model Training (XGBoost)
+        # 4. Model Training (XGBoost)
         clf = XGBClassifier(
             n_estimators=500, learning_rate=0.05, max_depth=7, eval_metric='logloss', random_state=42
         )
         clf.fit(X_train, train_df['label'])
         print("✅ Model trained successfully")
 
-        # Evaluation (using imported metrics)
+        # 5. Evaluation
         evaluate_model(X_val, val_df['label'], clf, 'Validation')
         evaluate_model(X_test, test_df['label'], clf, 'Test')
 
-        # Save model components
+        # 6. Save model components
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump(
             {'model': clf, 'vectorizer': tfidf_vectorizer, 'scaler': scaler, 'numeric_cols': GLOBAL_NUMERIC_COLS},
@@ -116,17 +116,16 @@ def start_background_training():
         thread.start()
 
 
-# model.py - UPDATED predict_email function
-
-# ... (rest of the code above this function remains the same)
-
-def predict_email(text, custom_threshold=0.35):  # <-- Add custom_threshold parameter
-    """Predicts the label for a given email text using a custom threshold."""
+def predict_email(text, custom_threshold=0.5):
+    """
+    Predicts the label for a given email text using a custom threshold.
+    The default threshold (0.35) is set to favor Recall (detecting more threats).
+    """
     if training_in_progress or clf is None or tfidf_vectorizer is None or scaler is None:
         return "Model is not fully initialized (training in progress or failed to load/train).", 0, 0
 
     try:
-        # 1. Prepare data row and Feature Extraction (No Change)
+        # 1. Prepare data row and Feature Extraction
         data_row = {'email_text': text, 'subject': '', 'links_count': 0, 'email_length_csv': np.nan,
                     'special_chars_csv': np.nan, 'subject_length_csv': np.nan}
         for col in GLOBAL_NUMERIC_COLS:
@@ -135,20 +134,17 @@ def predict_email(text, custom_threshold=0.35):  # <-- Add custom_threshold para
         df = pd.DataFrame([data_row])
         df = extract_additional_features(df)
 
-        # 2. Transformation (No Change)
+        # 2. Transformation
         X_text = tfidf_vectorizer.transform([text[:MAX_EMAIL_LENGTH]])
         X_numeric = scaler.transform(df[GLOBAL_NUMERIC_COLS].values)
         X_combined = hstack([X_text, X_numeric])
 
         # 3. Prediction and Custom Threshold Application
-        # Get the probability array for the combined features
         proba = clf.predict_proba(X_combined)[0]
-
-        # Get the index of the 'phishing' class (which is 1)
         phishing_class_index = list(clf.classes_).index(1)
         phishing_probability = proba[phishing_class_index]
 
-        # Apply the custom threshold to classify
+        # Apply the custom threshold to classify (Recall-focused)
         pred = 1 if phishing_probability >= custom_threshold else 0
 
         # 4. Calculate probabilities (for display)

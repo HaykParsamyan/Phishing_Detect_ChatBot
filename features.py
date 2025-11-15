@@ -14,7 +14,8 @@ csv.field_size_limit(2 ** 31 - 1)
 DATASET_PATH = "data/dataset.csv"
 PHISHING_DATASET_PATH = "data/Phishing_Email.csv"
 CEAS_DATASET_PATH = "data/CEAS_08.csv"
-PHISHING_URLS_DATASET_PATH = "data/phishing_site_urls.csv"  # <--- UPDATED FILENAME
+PHISHING_URLS_DATASET_PATH = "data/phishing_site_urls.csv"
+PHISHING_URLS2_DATASET_PATH = "data/phishing_site_urls2.csv"  # <--- NEW FILE PATH
 MAX_EMAIL_LENGTH = 2000
 
 URGENCY_KEYWORDS = [
@@ -39,10 +40,16 @@ CEAS_COLUMN_MAPPING = {
     'label': 'label',
 }
 
-# Mapping for the Phishing URL Dataset (Uses the provided headers: URL and Label)
+# Mapping for the Phishing URL Dataset 1 (URL, Label)
 URL_COLUMN_MAPPING = {
     'URL': 'email_text',
     'Label': 'label',
+}
+
+# Mapping for the Phishing URL Dataset 2 (url, type)
+URL_COLUMN_MAPPING2 = {
+    'url': 'email_text',
+    'type': 'label',
 }
 
 # Define the set of features the model will use
@@ -117,14 +124,13 @@ def extract_additional_features(df):
 
 
 def load_and_prepare_dataset():
-    """Loads, merges, and prepares all four datasets."""
+    """Loads, merges, and prepares all five datasets."""
 
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Primary dataset not found at {DATASET_PATH}.")
 
     canonical_cols = list(COLUMN_MAPPING.values())
 
-    # --- load_df function with robustness fixes (encoding and tokenization) ---
     def load_df(path, mapping, name):
         if os.path.exists(path):
             print(f"Attempting to load {name} from {path}...")
@@ -160,20 +166,21 @@ def load_and_prepare_dataset():
 
         return pd.DataFrame()
 
-    # --- Loading all 4 datasets ---
+    # --- Loading all 5 datasets ---
     df_main = load_df(DATASET_PATH, COLUMN_MAPPING, "dataset.csv")
     df_phish = load_df(PHISHING_DATASET_PATH, COLUMN_MAPPING, "Phishing_Email.csv")
     df_ceas = load_df(CEAS_DATASET_PATH, CEAS_COLUMN_MAPPING, "CEAS_08.csv")
     df_urls = load_df(PHISHING_URLS_DATASET_PATH, URL_COLUMN_MAPPING, "phishing_site_urls.csv")
+    df_urls2 = load_df(PHISHING_URLS2_DATASET_PATH, URL_COLUMN_MAPPING2, "phishing_site_urls2.csv")  # <--- NEW LOAD
 
-    dataframes = [df_main, df_phish, df_ceas, df_urls]
+    dataframes = [df_main, df_phish, df_ceas, df_urls, df_urls2]  # <--- NEW DATAFRAME ADDED
 
     # Concatenate all datasets
-    df = pd.concat([d.reindex(columns=canonical_cols) for d in dataframes], ignore_index=True)
+    df = pd.concat([d.reindex(columns=canonical_cols) for d in dataframes if not d.empty], ignore_index=True)
 
     df.drop_duplicates(subset=['email_text'], inplace=True)
 
-    # Map all negative indicators (phishing, spam, bad, 1) to the positive class (1) <--- UPDATED LABEL LOGIC
+    # Map all negative indicators (phishing, spam, bad, legitimate) to the positive class (1 or 0)
     df['label'] = df['label'].astype(str).str.lower().apply(
         lambda x: 1 if ('phishing' in x) or ('spam' in x) or ('bad' in x) or (x == '1') else 0)
 
