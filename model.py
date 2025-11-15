@@ -116,10 +116,10 @@ def start_background_training():
         thread.start()
 
 
-def predict_email(text, custom_threshold=0.5):
+def predict_email(text, custom_threshold=0.50):  # <-- DEFAULT THRESHOLD CHANGED TO 0.40
     """
     Predicts the label for a given email text using a custom threshold.
-    The default threshold (0.35) is set to favor Recall (detecting more threats).
+    The default threshold (0.40) is now set to a slightly less aggressive value.
     """
     if training_in_progress or clf is None or tfidf_vectorizer is None or scaler is None:
         return "Model is not fully initialized (training in progress or failed to load/train).", 0, 0

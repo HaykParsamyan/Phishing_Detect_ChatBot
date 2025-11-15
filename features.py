@@ -15,7 +15,9 @@ DATASET_PATH = "data/dataset.csv"
 PHISHING_DATASET_PATH = "data/Phishing_Email.csv"
 CEAS_DATASET_PATH = "data/CEAS_08.csv"
 PHISHING_URLS_DATASET_PATH = "data/phishing_site_urls.csv"
-PHISHING_URLS2_DATASET_PATH = "data/phishing_site_urls2.csv"  # <--- NEW FILE PATH
+PHISHING_URLS2_DATASET_PATH = "data/phishing_site_urls2.csv"
+PHISHING_EMAIL2_DATASET_PATH = "data/phishing_email_2.csv"
+MALICIOUS_PHISHING_DATASET_PATH = "data/malicious_phishing_dataset.csv"  # <--- NEW FILE PATH
 MAX_EMAIL_LENGTH = 2000
 
 URGENCY_KEYWORDS = [
@@ -52,6 +54,18 @@ URL_COLUMN_MAPPING2 = {
     'type': 'label',
 }
 
+# Mapping for the new phishing_email_2.csv (text_combined, label)
+PHISHING_EMAIL2_MAPPING = {
+    'text_combined': 'email_text',
+    'label': 'label',
+}
+
+# Mapping for malicious_phishing_dataset.csv (url, type) <--- NEW MAPPING
+MALICIOUS_PHISHING_MAPPING = {
+    'url': 'email_text',
+    'type': 'label',
+}
+
 # Define the set of features the model will use
 GLOBAL_NUMERIC_COLS = [
     'email_length', 'subject_length', 'link_density', 'special_chars',
@@ -59,6 +73,8 @@ GLOBAL_NUMERIC_COLS = [
     'subject_keyword_count', 'urgency_score', 'link_anomaly_score'
 ]
 
+
+# --- FEATURE EXTRACTION FUNCTIONS ---
 
 def is_url_suspicious(url):
     """Calculates a suspicious score based on URL structure."""
@@ -123,8 +139,10 @@ def extract_additional_features(df):
     return df
 
 
+# --- DATA LOADING AND PREPARATION ---
+
 def load_and_prepare_dataset():
-    """Loads, merges, and prepares all five datasets."""
+    """Loads, merges, and prepares all seven datasets."""
 
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Primary dataset not found at {DATASET_PATH}.")
@@ -132,6 +150,7 @@ def load_and_prepare_dataset():
     canonical_cols = list(COLUMN_MAPPING.values())
 
     def load_df(path, mapping, name):
+        """Helper function to load a single CSV with robust encoding handling."""
         if os.path.exists(path):
             print(f"Attempting to load {name} from {path}...")
             encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
@@ -166,21 +185,26 @@ def load_and_prepare_dataset():
 
         return pd.DataFrame()
 
-    # --- Loading all 5 datasets ---
+    # --- Loading all 7 datasets ---
     df_main = load_df(DATASET_PATH, COLUMN_MAPPING, "dataset.csv")
     df_phish = load_df(PHISHING_DATASET_PATH, COLUMN_MAPPING, "Phishing_Email.csv")
     df_ceas = load_df(CEAS_DATASET_PATH, CEAS_COLUMN_MAPPING, "CEAS_08.csv")
     df_urls = load_df(PHISHING_URLS_DATASET_PATH, URL_COLUMN_MAPPING, "phishing_site_urls.csv")
-    df_urls2 = load_df(PHISHING_URLS2_DATASET_PATH, URL_COLUMN_MAPPING2, "phishing_site_urls2.csv")  # <--- NEW LOAD
+    df_urls2 = load_df(PHISHING_URLS2_DATASET_PATH, URL_COLUMN_MAPPING2, "phishing_site_urls2.csv")
+    df_email2 = load_df(PHISHING_EMAIL2_DATASET_PATH, PHISHING_EMAIL2_MAPPING, "phishing_email_2.csv")
 
-    dataframes = [df_main, df_phish, df_ceas, df_urls, df_urls2]  # <--- NEW DATAFRAME ADDED
+    # LOAD THE NEW MALICIOUS DATASET
+    df_malicious = load_df(MALICIOUS_PHISHING_DATASET_PATH, MALICIOUS_PHISHING_MAPPING,
+                           "malicious_phishing_dataset.csv")  # <--- NEW LOAD
+
+    dataframes = [df_main, df_phish, df_ceas, df_urls, df_urls2, df_email2, df_malicious]  # <--- ADDED df_malicious
 
     # Concatenate all datasets
     df = pd.concat([d.reindex(columns=canonical_cols) for d in dataframes if not d.empty], ignore_index=True)
 
     df.drop_duplicates(subset=['email_text'], inplace=True)
 
-    # Map all negative indicators (phishing, spam, bad, legitimate) to the positive class (1 or 0)
+    # Map all negative indicators (phishing, spam, bad, 1) to the positive class (1)
     df['label'] = df['label'].astype(str).str.lower().apply(
         lambda x: 1 if ('phishing' in x) or ('spam' in x) or ('bad' in x) or (x == '1') else 0)
 
