@@ -13,6 +13,7 @@ import threading
 
 # Import functions and configurations from the new modules
 from features import load_and_prepare_dataset, extract_additional_features, MAX_EMAIL_LENGTH, GLOBAL_NUMERIC_COLS
+# Assuming you have a separate metrics.py file for evaluation
 from metrics import evaluate_model
 
 # Global variables
@@ -31,6 +32,7 @@ def train_model_sync():
 
     print("\n--- Starting Model Training ---")
     try:
+        # Load and prepare data, which now includes all new features from features.py
         df = load_and_prepare_dataset()
 
         # Data Split: 80% Train, 10% Validation, 10% Test
@@ -45,7 +47,7 @@ def train_model_sync():
         X_val_text = tfidf_vectorizer.transform(val_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_test_text = tfidf_vectorizer.transform(test_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
 
-        # 2. Scaling Numeric Features
+        # 2. Scaling Numeric Features (Automatically includes all features in GLOBAL_NUMERIC_COLS)
         X_train_numeric = train_df[GLOBAL_NUMERIC_COLS].values
         X_val_numeric = val_df[GLOBAL_NUMERIC_COLS].values
         X_test_numeric = test_df[GLOBAL_NUMERIC_COLS].values
@@ -55,7 +57,7 @@ def train_model_sync():
         X_val_numeric = scaler.transform(X_val_numeric)
         X_test_numeric = scaler.transform(X_test_numeric)
 
-        # 3. Combine Features
+        # 3. Combine Features (Text and Numeric)
         X_train = hstack([X_train_text, X_train_numeric])
         X_val = hstack([X_val_text, X_val_numeric])
         X_test = hstack([X_test_text, X_test_numeric])
@@ -116,21 +118,23 @@ def start_background_training():
         thread.start()
 
 
-def predict_email(text, custom_threshold=0.50):  # <-- DEFAULT THRESHOLD CHANGED TO 0.40
+def predict_email(text, custom_threshold=0.40):
     """
-    Predicts the label for a given email text using a custom threshold.
-    The default threshold (0.40) is now set to a slightly less aggressive value.
+    Predicts the label for a given email text using a custom threshold (default 0.40).
     """
     if training_in_progress or clf is None or tfidf_vectorizer is None or scaler is None:
         return "Model is not fully initialized (training in progress or failed to load/train).", 0, 0
 
     try:
-        # 1. Prepare data row and Feature Extraction
+        # 1. Prepare data row and Feature Extraction (calls the latest features.py logic)
         data_row = {'email_text': text, 'subject': '', 'links_count': 0, 'email_length_csv': np.nan,
                     'special_chars_csv': np.nan, 'subject_length_csv': np.nan}
+
+        # Populate dummy or nan values for feature extraction
         for col in GLOBAL_NUMERIC_COLS:
             if col not in data_row:
                 data_row[col] = 0
+
         df = pd.DataFrame([data_row])
         df = extract_additional_features(df)
 
@@ -144,7 +148,7 @@ def predict_email(text, custom_threshold=0.50):  # <-- DEFAULT THRESHOLD CHANGED
         phishing_class_index = list(clf.classes_).index(1)
         phishing_probability = proba[phishing_class_index]
 
-        # Apply the custom threshold to classify (Recall-focused)
+        # Apply the custom threshold to classify (Recalls-focused)
         pred = 1 if phishing_probability >= custom_threshold else 0
 
         # 4. Calculate probabilities (for display)

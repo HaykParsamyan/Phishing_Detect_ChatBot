@@ -89,16 +89,12 @@ async def handle_email_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def start_bot(token: str):
     """Initializes and runs the Telegram bot."""
-    # Create the Application and pass it your bot's token.
+    # This line should be indented exactly 4 spaces (or 1 tab) from 'def'
     application = Application.builder().token(token).build()
 
-    # Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
-
-    # Handle incoming text messages that are not commands
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_text))
 
-    # Run the bot until the user presses Ctrl-C
     print("Bot is polling... Press Ctrl-C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
