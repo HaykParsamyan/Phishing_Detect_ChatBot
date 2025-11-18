@@ -2,33 +2,34 @@
 
 import pandas as pd
 import numpy as np
+import xgboost as xgb  # Use native XGBoost API
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
 from scipy.sparse import hstack
 import joblib
 import os
 import threading
 
-# --- NEW IMPORTS FOR ONNX CONVERSION ---
+# --- ONNX Imports ---
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
 import onnx
-# ---------------------------------------
+# --------------------
 
 # Import functions and configurations from the new modules
+# NOTE: Ensure your features.py and metrics.py files are available
 from features import load_and_prepare_dataset, extract_additional_features, MAX_EMAIL_LENGTH, GLOBAL_NUMERIC_COLS
-# Assuming you have a separate metrics.py file for evaluation
 from metrics import evaluate_model
 
 # Global variables
+# clf is now an XGBoost Booster object, not an XGBClassifier
 clf = None
 tfidf_vectorizer = None
 scaler = None
 training_in_progress = False
 MODEL_PATH = "models/phishing_detection_model.pkl"
-ONNX_MODEL_PATH = "models/phishing_detector.onnx"  # Path for ONNX export
+ONNX_MODEL_PATH = "models/phishing_detector.onnx"
 
 
 # --- Training and Prediction Core Logic ---
@@ -39,7 +40,7 @@ def train_model_sync():
 
     print("\n--- Starting Model Training ---")
     try:
-        # Load and prepare data, which now includes all new features from features.py
+        # Load and prepare data (CPU-bound)
         df = load_and_prepare_dataset()
 
         # Data Split: 80% Train, 10% Validation, 10% Test
@@ -50,21 +51,16 @@ def train_model_sync():
         print(f"Train: {len(train_df)}, Validation: {len(val_df)}, Test: {len(test_df)}")
 
         # ------------------------------------------------------------------------
-        # >>> PROGRESS CHECKPOINT 1: TF-IDF Vectorization <<<
-        # ------------------------------------------------------------------------
-        print("\n⏳ **STATUS: Starting TF-IDF Vectorization and Transformation (CPU-Bound)...**")
-
         # 1. TF-IDF Text Transformation (CPU-bound)
+        print("\n⏳ **STATUS: Starting TF-IDF Vectorization and Transformation...**")
         tfidf_vectorizer = TfidfVectorizer(max_features=40000, stop_words='english', ngram_range=(1, 3))
         X_train_text = tfidf_vectorizer.fit_transform(train_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_val_text = tfidf_vectorizer.transform(val_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
         X_test_text = tfidf_vectorizer.transform(test_df['email_text'].astype(str).str[:MAX_EMAIL_LENGTH])
-
         print("✅ TF-IDF Transformation Complete.")
 
         # 2. Scaling Numeric Features (CPU-bound)
-        print("⏳ **STATUS: Starting Numeric Feature Scaling (CPU-Bound)...**")
-
+        print("⏳ **STATUS: Starting Numeric Feature Scaling...**")
         X_train_numeric = train_df[GLOBAL_NUMERIC_COLS].values
         X_val_numeric = val_df[GLOBAL_NUMERIC_COLS].values
         X_test_numeric = test_df[GLOBAL_NUMERIC_COLS].values
@@ -73,7 +69,6 @@ def train_model_sync():
         X_train_numeric = scaler.fit_transform(X_train_numeric)
         X_val_numeric = scaler.transform(X_val_numeric)
         X_test_numeric = scaler.transform(X_test_numeric)
-
         print("✅ Numeric Feature Scaling Complete.")
 
         # 3. Combine Features (CPU-bound)
@@ -81,65 +76,66 @@ def train_model_sync():
         X_train = hstack([X_train_text, X_train_numeric])
         X_val = hstack([X_val_text, X_val_numeric])
         X_test = hstack([X_test_text, X_test_numeric])
-        print("✅ Feature Combination Complete. Starting GPU Training.")
+        print("✅ Feature Combination Complete.")
 
-        # 4. Model Training (GPU-bound)
+        # ------------------------------------------------------------------------
+        # 4. Convert to DMatrix for Optimal GPU Transfer (CRITICAL STEP)
+        # ------------------------------------------------------------------------
+        print("⏳ **STATUS: Converting to XGBoost DMatrix (Optimizing Sparse Data Transfer to GPU)...**")
+        dtrain = xgb.DMatrix(X_train, label=train_df['label'])
+        dval = xgb.DMatrix(X_val, label=val_df['label'])
+        dtest = xgb.DMatrix(X_test, label=test_df['label'])
+        print("✅ DMatrix Conversion Complete. Starting GPU Training.")
 
-        clf = XGBClassifier(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=7,
-            objective='binary:logistic',  # Required for proper ONNX conversion
-            random_state=42,
+        # ------------------------------------------------------------------------
+        # 5. Model Training (GPU-bound) - Using Native API
+        # ------------------------------------------------------------------------
 
-            # --------------------------------
+        # Hyperparameters passed as a dictionary for the native API
+        params = {
+            'objective': 'binary:logistic',
+            'eval_metric': 'logloss',
+            'eta': 0.05,  # Learning Rate (was learning_rate in sklearn wrapper)
+            'max_depth': 7,
+            'random_state': 42,
             # CRUCIAL GPU ACCELERATION SETTINGS
-            # --------------------------------
-            tree_method='hist',  # Use the fast histogram algorithm
-            device='cuda'  # Execute the training on the dedicated GPU (RTX 3050)
-            # --------------------------------
+            'tree_method': 'hist',
+            'device': 'cuda'
+        }
+
+        # The native xgb.train function takes the DMatrix objects
+        clf = xgb.train(
+            params,
+            dtrain,
+            num_boost_round=500,  # Corresponds to n_estimators in sklearn wrapper
+            evals=[(dval, 'validation')],
+            verbose_eval=50
         )
-        clf.fit(X_train, train_df['label'])
         print("✅ Model trained successfully")
 
         # ----------------------------------------
-        # 5. NEW: ONNX Model Conversion (for fast, native Windows deployment)
+        # 6. Saving Model Components
         # ----------------------------------------
 
-        # Define the input type/shape (IMPORTANT: must match the combined feature count)
-        input_features = X_train.shape[1]
-        # Ensure input data type is specified for ONNX
-        initial_type = [('float_input', FloatTensorType([None, input_features], np.float32))]
+        # Save the native XGBoost Booster object (official recommendation)
+        clf.save_model("models/phishing_detector_booster.json")
+        print(f"Native XGBoost Booster saved to models/phishing_detector_booster.json")
 
-        # Convert the trained model
-        try:
-            onnx_model = convert_sklearn(
-                clf,
-                initial_types=initial_type,
-                target_opset=17
-            )
-
-            # Save the ONNX model file
-            os.makedirs(os.path.dirname(ONNX_MODEL_PATH), exist_ok=True)
-            with open(ONNX_MODEL_PATH, "wb") as f:
-                f.write(onnx_model.SerializeToString())
-
-            print(f"✅ XGBoost model converted and saved to: {ONNX_MODEL_PATH}")
-        except Exception as onnx_e:
-            print(f"⚠️ Warning: ONNX conversion failed. Prediction will rely on slow CPU/Python model. Error: {onnx_e}")
-
-        # ----------------------------------------
-        # 6. Evaluation
-        # ----------------------------------------
-        evaluate_model(X_val, val_df['label'], clf, 'Validation')
-        evaluate_model(X_test, test_df['label'], clf, 'Test')
-
-        # 7. Save Python components (Scaler/Vectorizer)
+        # Save the preprocessor components using joblib
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump(
-            {'model': clf, 'vectorizer': tfidf_vectorizer, 'scaler': scaler, 'numeric_cols': GLOBAL_NUMERIC_COLS},
+            {'vectorizer': tfidf_vectorizer, 'scaler': scaler, 'numeric_cols': GLOBAL_NUMERIC_COLS},
             MODEL_PATH, compress=3)
-        print(f"Python components saved as '{MODEL_PATH}'")
+        print(f"Pre-processor components saved as '{MODEL_PATH}'")
+
+        # NOTE: ONNX conversion is more complex for native Booster objects
+        # We will skip the ONNX conversion for the native Booster object for simplicity
+        # and rely on the JSON/Joblib saving for now.
+
+        # 7. Evaluation
+        evaluate_model(dval, val_df['label'], clf, 'Validation', native_api=True)
+        evaluate_model(dtest, test_df['label'], clf, 'Test', native_api=True)
+
 
     except Exception as e:
         print(f"Error during training: {e}")
@@ -151,18 +147,36 @@ def train_model_sync():
 def load_model():
     """Loads a pre-trained model and components."""
     global clf, tfidf_vectorizer, scaler
+
+    # 1. Load Preprocessor Components
     if os.path.exists(MODEL_PATH):
         try:
-            print(f"Attempting to load model from {MODEL_PATH}...")
+            print(f"Attempting to load pre-processors from {MODEL_PATH}...")
             data = joblib.load(MODEL_PATH)
-            clf = data['model']
             tfidf_vectorizer = data['vectorizer']
             scaler = data['scaler']
-            print("✅ Pre-trained model loaded successfully.")
+            print("✅ Pre-processor components loaded successfully.")
+        except Exception as e:
+            print(f"Error loading pre-processors: {e}")
+            return False
+    else:
+        return False
+
+    # 2. Load Native XGBoost Booster
+    booster_path = "models/phishing_detector_booster.json"
+    if os.path.exists(booster_path):
+        try:
+            print(f"Attempting to load XGBoost Booster from {booster_path}...")
+            # Initialize a new Booster object
+            clf = xgb.Booster()
+            # Load the model from the JSON file
+            clf.load_model(booster_path)
+            print("✅ XGBoost Booster loaded successfully.")
             return True
         except Exception as e:
-            print(f"Error loading model: {e}")
+            print(f"Error loading XGBoost Booster: {e}")
             return False
+
     return False
 
 
@@ -181,19 +195,15 @@ def start_background_training():
 
 def predict_email(text, custom_threshold=0.40):
     """
-    Predicts the label for a given email text using a custom threshold (default 0.40).
-    Note: This function still uses the slower Python/Joblib model (clf).
-    For fastest prediction, use the ONNX model via onnxruntime in a separate script.
+    Predicts the label for a given email text using the loaded XGBoost Booster.
     """
     if training_in_progress or clf is None or tfidf_vectorizer is None or scaler is None:
         return "Model is not fully initialized (training in progress or failed to load/train).", 0, 0
 
     try:
-        # 1. Prepare data row and Feature Extraction (calls the latest features.py logic)
+        # 1. Feature Extraction (uses CPU components)
         data_row = {'email_text': text, 'subject': '', 'links_count': 0, 'email_length_csv': np.nan,
                     'special_chars_csv': np.nan, 'subject_length_csv': np.nan}
-
-        # Populate dummy or nan values for feature extraction
         for col in GLOBAL_NUMERIC_COLS:
             if col not in data_row:
                 data_row[col] = 0
@@ -201,22 +211,24 @@ def predict_email(text, custom_threshold=0.40):
         df = pd.DataFrame([data_row])
         df = extract_additional_features(df)
 
-        # 2. Transformation
+        # 2. Transformation (uses CPU components)
         X_text = tfidf_vectorizer.transform([text[:MAX_EMAIL_LENGTH]])
         X_numeric = scaler.transform(df[GLOBAL_NUMERIC_COLS].values)
         X_combined = hstack([X_text, X_numeric])
 
-        # 3. Prediction and Custom Threshold Application
-        proba = clf.predict_proba(X_combined)[0]
-        phishing_class_index = list(clf.classes_).index(1)
-        phishing_probability = proba[phishing_class_index]
+        # 3. Prediction using DMatrix (Required for native Booster)
+        dpredict = xgb.DMatrix(X_combined)
 
-        # Apply the custom threshold to classify (Recalls-focused)
+        # Native Booster predicts raw score by default; use output='prob' for probability
+        # pred_proba returns probability for the positive class (1)
+        phishing_probability = clf.predict(dpredict, output_margin=False)[0]
+
+        # Apply the custom threshold
         pred = 1 if phishing_probability >= custom_threshold else 0
 
         # 4. Calculate probabilities (for display)
-        safe_prob = proba[list(clf.classes_).index(0)] * 100 if 0 in clf.classes_ else 0
         phishing_prob = phishing_probability * 100
+        safe_prob = (1.0 - phishing_probability) * 100
 
         return ('phishing' if pred == 1 else 'legitimate', phishing_prob, safe_prob)
 
