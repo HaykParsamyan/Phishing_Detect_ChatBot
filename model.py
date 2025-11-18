@@ -64,7 +64,7 @@ def train_model_sync():
 
         # 4. Model Training (XGBoost)
         clf = XGBClassifier(
-            n_estimators=500, learning_rate=0.05, max_depth=7, eval_metric='logloss', random_state=42
+            n_estimators=500, learning_rate=0.05, max_depth=7, eval_metric='logloss', random_state=42, tree_method='gpu_hist'
         )
         clf.fit(X_train, train_df['label'])
         print("✅ Model trained successfully")
