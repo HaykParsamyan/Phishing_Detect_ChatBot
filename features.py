@@ -65,6 +65,14 @@ GLOBAL_NUMERIC_COLS = [
 
 # --- FEATURE EXTRACTION FUNCTIONS ---
 
+# Pre-compiled Regex patterns (improves efficiency when used repeatedly)
+IP_PATTERN = re.compile(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+URL_PATTERN = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
+HTML_TAG_PATTERN = re.compile(r'<(table|div|img|p|a|script|iframe)', re.IGNORECASE)
+PUNCTUATION_PATTERN = re.compile(r'[!$%^&*()_+|~=`{}\[\]:";\'<>?,./]')
+INCOMPLETE_TLD_PATTERN = re.compile(r'(\.co|\.or|\.n\w|\.in|\.ru)[^\w/]', re.IGNORECASE)
+
+
 def is_url_suspicious(url):
     """Calculates a suspicious score based on URL structure."""
     if not isinstance(url, str):
@@ -73,8 +81,8 @@ def is_url_suspicious(url):
     score = 0
     url_lower = url.lower()
 
-    # IP Address Check
-    if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', url_lower):
+    # IP Address Check (using pre-compiled IP_PATTERN)
+    if IP_PATTERN.search(url_lower):
         score += 2
     # Use of the @ symbol (Credential obfuscation)
     if '@' in url_lower:
@@ -94,15 +102,12 @@ def check_non_latin(text):
     count = 0
 
     # Define ranges for common homograph scripts (Cyrillic, Greek, etc.)
-    # Cyrillic script: U+0400 to U+04FF
-    # Greek script: U+0370 to U+03FF
     cyrillic_range = (0x0400, 0x04FF)
     greek_range = (0x0370, 0x03FF)
 
     for char in text:
         char_ord = ord(char)
 
-        # Check if the character is a letter AND falls within a suspicious range
         if char.isalpha():
             if (char_ord >= cyrillic_range[0] and char_ord <= cyrillic_range[1]):
                 count += 1
@@ -144,7 +149,7 @@ def calculate_typosquatting_score(text):
     if not isinstance(text, str):
         return 0
 
-    urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', str(text))
+    urls = URL_PATTERN.findall(str(text))
 
     if not urls:
         return 0
@@ -190,10 +195,8 @@ def check_incomplete_tld(text):
     if not isinstance(text, str):
         return 0
 
-    # Pattern to find domains ending with common TLD prefixes followed by a non-word char (space, quote, comma)
-    incomplete_pattern = re.compile(r'(\.co|\.or|\.n\w|\.in|\.ru)[^\w/]', re.IGNORECASE)
-
-    if re.search(incomplete_pattern, text):
+    # Use pre-compiled INCOMPLETE_TLD_PATTERN
+    if INCOMPLETE_TLD_PATTERN.search(text):
         return 1
 
     return 0
@@ -213,12 +216,13 @@ def extract_additional_features(df):
     df['links_count'] = pd.to_numeric(df['links_count'], errors='coerce').fillna(0).astype(float)
     df['link_density'] = df['links_count'] / (df['email_length'] + 1)
 
+    # Special Chars (using pre-compiled PUNCTUATION_PATTERN)
     df['special_chars'] = df.apply(
         lambda row: row['special_chars_csv'] if pd.notnull(row.get('special_chars_csv')) else len(
-            re.findall(r'[!$%^&*()_+|~=`{}\[\]:";\'<>?,./]', str(row['email_text']))), axis=1)
+            PUNCTUATION_PATTERN.findall(str(row['email_text']))), axis=1)
 
-    tag_pattern = re.compile(r'<(table|div|img|p|a|script|iframe)', re.IGNORECASE)
-    df['html_tags'] = df['email_text'].apply(lambda x: len(re.findall(tag_pattern, str(x))))
+    # HTML Tags (using pre-compiled HTML_TAG_PATTERN)
+    df['html_tags'] = df['email_text'].apply(lambda x: len(HTML_TAG_PATTERN.findall(str(x))))
 
     # Urgency Score
     urgency_pattern = re.compile('|'.join(re.escape(k) for k in URGENCY_KEYWORDS), re.IGNORECASE)
@@ -227,8 +231,7 @@ def extract_additional_features(df):
     # Link Anomaly Score (IP address, @ symbol in URL)
     df['link_anomaly_score'] = df['email_text'].apply(lambda x:
                                                       max([is_url_suspicious(url) for url in
-                                                           re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+',
-                                                                      str(x))] or [0])
+                                                           URL_PATTERN.findall(str(x))] or [0])
                                                       if pd.notnull(x) else 0)
 
     # All four advanced features are calculated here:
