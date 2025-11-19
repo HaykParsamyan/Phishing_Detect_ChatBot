@@ -1,9 +1,9 @@
-# bot.py (Fully Updated for merged dataset & PTB v20+)
+# bot.py (Updated for Integer Percentages)
 
-import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from model import predict_email, training_in_progress, start_background_training
+from model import predict_email, training_in_progress  # Import the necessary functions/variables
+
 
 # --- Telegram Bot Handlers ---
 
@@ -15,6 +15,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Use /status to check if the model is ready.",
         parse_mode='Markdown'
     )
+
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reports the current training status of the AI model."""
@@ -31,9 +32,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode='Markdown'
         )
 
+
 async def handle_email_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Analyzes the received email text using the trained model."""
-    user_text = update.message.text or ""
+    """Analyzes the received text using the trained model, with enhanced visualization."""
+    user_text = update.message.text
 
     if training_in_progress:
         await update.message.reply_text("Model is still training... please try again shortly.")
@@ -42,59 +44,57 @@ async def handle_email_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Acknowledge receipt
     await update.message.reply_text("Analyzing email text... 🕵️‍♀️ Please wait a moment.")
 
-    # Prediction
+    # Call the prediction function from model.py
+    # The predict_email function already returns floats, but we'll round them here for display
     result, phishing_prob_float, safe_prob_float = predict_email(user_text)
 
-    # Convert probabilities to integer percentages
+    # Convert floats to rounded integers for display
     phishing_prob = int(round(phishing_prob_float))
     safe_prob = int(round(safe_prob_float))
 
-    # Generate response
+    # --- ENHANCED RESPONSE GENERATION ---
+
     if result == "phishing":
+        # Using a distinct visual style for threats
         response_text = (
-            f"🛑 **PHISHING ALERT!** 🛑\n\n"
-            f"⚠️ Threat Level: HIGH\n"
+            f"🛑🛑 **PHISHING ALERT!** 🛑🛑\n\n"
+            f"**⚠️ Threat Level: HIGH**\n"
             f"The model predicts this email is **PHISHING**.\n\n"
-            f"📊 Confidence Score:\n"
-            f"   - Phishing: `{phishing_prob}%` 🚨\n"
+            f"📊 **Confidence Score:**\n"
+            f"   - **Phishing:** `{phishing_prob}%` 🚨\n"
             f"   - Legitimate: `{safe_prob}%`\n\n"
-            f"--- 🚫 ACTION REQUIRED 🚫 ---\n"
+            f"--- 🚫 **ACTION REQUIRED** 🚫 ---\n"
             f"**DO NOT** click any links, open attachments, or reply with sensitive information.\n"
             f"Report this email to your security team immediately."
         )
     elif result == "legitimate":
+        # Using a calm, safe visual style
         response_text = (
             f"✅ **Email Analysis Complete** ✅\n\n"
-            f"👍 Prediction: LEGITIMATE\n"
-            f"The model predicts this email is safe.\n\n"
-            f"📊 Confidence Score:\n"
-            f"   - Legitimate: `{safe_prob}%` ✨\n"
+            f"**👍 Prediction: LEGITIMATE**\n"
+            f"The model predicts this email is safe and **Legitimate**.\n\n"
+            f"📊 **Confidence Score:**\n"
+            f"   - **Legitimate:** `{safe_prob}%` ✨\n"
             f"   - Phishing: `{phishing_prob}%`\n\n"
-            f"--- 💡 REMINDER 💡 ---\n"
-            f"While the AI finds it safe, always be cautious of unexpected requests for personal data."
+            f"--- 💡 **REMINDER** 💡 ---\n"
+            f"While the AI finds it safe, **always be cautious** of requests for personal data or unexpected messages."
         )
     else:
-        response_text = f"⚠️ An error occurred during analysis: {result}"
+        # Handle errors or initialization messages
+        response_text = f"An error occurred during analysis: {result}"
 
-    # Send response using Markdown
+    # Send the final response using Markdown
     await update.message.reply_text(response_text, parse_mode='Markdown')
 
 
-# --- Bot Runner ---
-
 def start_bot(token: str):
-    """Initializes and runs the Telegram bot asynchronously (PTB v20+)."""
+    """Initializes and runs the Telegram bot."""
+    # This line should be indented exactly 4 spaces (or 1 tab) from 'def'
     application = Application.builder().token(token).build()
 
-    # Add command and message handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_text))
 
-    # Start background training automatically
-    start_background_training()
-
     print("Bot is polling... Press Ctrl-C to stop.")
-
-    # Run the bot asynchronously
-    asyncio.run(application.run_polling())
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
