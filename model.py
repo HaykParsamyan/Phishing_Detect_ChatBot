@@ -1,113 +1,143 @@
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from xgboost import XGBClassifier
-from scipy.sparse import hstack
-import joblib
+# model.py
 import os
-import threading
+import time
+import torch
+from torch.utils.data import DataLoader
+from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from dataset import EmailDataset  # Your custom torch Dataset class
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
-from features import load_and_prepare_dataset, extract_additional_features, MAX_EMAIL_LENGTH
-
-# --- Global variables ---
-clf = None
-tfidf_vectorizer = None
+# --- Globals ---
 training_in_progress = False
-MODEL_PATH = "models/phishing_detection_model_full.pkl"
+MODEL_PATH = "models/bert_phishing"
+TOKENIZER_PATH = "models/bert_phishing_tokenizer"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = None
+tokenizer = None
+
+# --- Dataset ---
+DATA_PATH = "final_data/all_phishing_master_dataset.csv"
+MAX_LEN = 512
+
+def load_and_prepare_dataset(sample_frac=1.0):
+    df = pd.read_csv(DATA_PATH, low_memory=False)
+    if sample_frac < 1.0:
+        df = df.sample(frac=sample_frac, random_state=42)
+    df = df.reset_index(drop=True)
+    df['email_text'] = df['subject'].astype(str) + " " + df['body'].astype(str)
+    return df
 
 # --- Training function ---
-
-def train_model_sync():
-    global clf, tfidf_vectorizer, training_in_progress
-
-    print("\n--- Starting Full Model Training ---")
+def train_model(sample_frac=1.0, batch_size=8, epochs=1, lr=2e-5):
+    global training_in_progress, model, tokenizer
     training_in_progress = True
-    try:
-        df = load_and_prepare_dataset()
-        df = extract_additional_features(df)
+    print("--- Starting BERT Model Training ---")
 
-        print(f"⚡ Full dataset: {len(df)} rows")
+    df = load_and_prepare_dataset(sample_frac)
+    train_df, temp_df = train_test_split(df, test_size=0.2, random_state=42, stratify=df['label'])
+    val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42, stratify=temp_df['label'])
 
-        # Split data: 80% train, 10% val, 10% test
-        train_df, temp_df = train_test_split(df, test_size=0.2, stratify=df['label'], random_state=42)
-        val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['label'], random_state=42)
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
-        # TF-IDF
-        tfidf_vectorizer = TfidfVectorizer(max_features=20000, stop_words='english', ngram_range=(1, 3))
-        X_train_text = tfidf_vectorizer.fit_transform(train_df['email_text'].str[:MAX_EMAIL_LENGTH])
-        X_val_text = tfidf_vectorizer.transform(val_df['email_text'].str[:MAX_EMAIL_LENGTH])
-        X_test_text = tfidf_vectorizer.transform(test_df['email_text'].str[:MAX_EMAIL_LENGTH])
+    # Load tokenizer & model
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=2)
+    model.to(device)
 
-        # Only text features
-        X_train = X_train_text
-        X_val = X_val_text
-        X_test = X_test_text
+    # Encode data
+    train_encodings = tokenizer(train_df['email_text'].tolist(), truncation=True, padding=True, max_length=MAX_LEN)
+    val_encodings = tokenizer(val_df['email_text'].tolist(), truncation=True, padding=True, max_length=MAX_LEN)
 
-        # XGBoost
-        clf = XGBClassifier(
-            n_estimators=200,  # full training trees
-            learning_rate=0.05,
-            max_depth=7,
-            eval_metric='logloss',
-            use_label_encoder=False,
-            random_state=42
-        )
-        clf.fit(X_train, train_df['label'])
-        print("✅ Full model trained successfully")
+    train_labels = train_df['label'].tolist()
+    val_labels = val_df['label'].tolist()
 
-        # Optional evaluation
-        val_pred = clf.predict(X_val)
-        test_pred = clf.predict(X_test)
-        print(f"Validation sample size: {len(val_pred)}, Test sample size: {len(test_pred)}")
+    train_dataset = EmailDataset(train_encodings, train_labels)
+    val_dataset = EmailDataset(val_encodings, val_labels)
 
-        # Save model
-        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-        joblib.dump({'model': clf, 'vectorizer': tfidf_vectorizer}, MODEL_PATH, compress=3)
-        print(f"Model saved as '{MODEL_PATH}'")
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-    except Exception as e:
-        print(f"Error during full training: {e}")
-    finally:
-        training_in_progress = False
-        print("--- Full Training Complete ---")
+    optimizer = AdamW(model.parameters(), lr=lr)
+    total_steps = len(train_loader) * epochs
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+    loss_fn = torch.nn.CrossEntropyLoss()
 
+    # --- Training loop ---
+    for epoch in range(epochs):
+        print(f"\n--- Epoch {epoch + 1}/{epochs} ---")
+        model.train()
+        total_loss = 0
+        start_time = time.time()
 
-def load_model():
-    global clf, tfidf_vectorizer
+        for i, batch in enumerate(train_loader):
+            optimizer.zero_grad()
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+
+            outputs = model(input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+            loss = loss_fn(logits, labels)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            total_loss += loss.item()
+
+            # Print progress every batch or every 10 batches
+            if i % 10 == 0 or i == len(train_loader) - 1:
+                elapsed = time.time() - start_time
+                percent = (i + 1) / len(train_loader) * 100
+                batches_per_sec = (i + 1) / elapsed
+                eta = (len(train_loader) - (i + 1)) / batches_per_sec
+                print(f"Batch {i + 1}/{len(train_loader)} - Loss: {loss.item():.4f} "
+                      f"| {percent:.2f}% complete | ETA: {eta/60:.1f} min | Device: {device}")
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f}")
+
+    # Save model & tokenizer
+    os.makedirs(MODEL_PATH, exist_ok=True)
+    model.save_pretrained(MODEL_PATH)
+    tokenizer.save_pretrained(TOKENIZER_PATH)
+    print(f"Model and tokenizer saved to {MODEL_PATH} / {TOKENIZER_PATH}")
+
+    training_in_progress = False
+
+# --- Load trained model ---
+def load_trained_model():
+    global model, tokenizer
     if os.path.exists(MODEL_PATH):
-        try:
-            data = joblib.load(MODEL_PATH)
-            clf = data['model']
-            tfidf_vectorizer = data['vectorizer']
-            print("✅ Full model loaded successfully.")
-            return True
-        except Exception as e:
-            print(f"Error loading full model: {e}")
-            return False
+        tokenizer = BertTokenizer.from_pretrained(TOKENIZER_PATH)
+        model = BertForSequenceClassification.from_pretrained(MODEL_PATH)
+        model.to(device)
+        return True
     return False
 
+# --- Quick test helper ---
+def quick_test_train():
+    """Train on 1% of dataset for fast test."""
+    train_model(sample_frac=0.01, batch_size=4, epochs=1)
 
-def start_background_training():
-    global training_in_progress
-    if load_model():
-        print("Skipping full training: pre-trained model found.")
-        return
-    if not training_in_progress:
-        thread = threading.Thread(target=train_model_sync, daemon=True)
-        thread.start()
+# --- Email Prediction Function ---
+def predict_email(email_text):
+    global model, tokenizer, device
+    if model is None or tokenizer is None:
+        raise ValueError("Model or tokenizer not loaded. Run `load_trained_model()` first.")
 
+    inputs = tokenizer(email_text, return_tensors="pt", truncation=True, padding=True, max_length=512).to(device)
 
-def predict_email(text, custom_threshold=0.4):
-    if training_in_progress or clf is None or tfidf_vectorizer is None:
-        return "Model not ready", 0, 0
-    try:
-        X_text = tfidf_vectorizer.transform([text[:MAX_EMAIL_LENGTH]])
-        proba = clf.predict_proba(X_text)[0]
-        phishing_prob = proba[list(clf.classes_).index(1)] * 100
-        safe_prob = proba[list(clf.classes_).index(0)] * 100
-        pred = 1 if phishing_prob >= custom_threshold * 100 else 0
-        return ('phishing' if pred == 1 else 'legitimate', phishing_prob, safe_prob)
-    except Exception as e:
-        return f"Prediction error: {e}", 0, 0
+    model.eval()
+    with torch.no_grad():
+        outputs = model(**inputs)
+        logits = outputs.logits
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+
+        phishing_prob = float(probs[1])
+        safe_prob = float(probs[0])
+        result = "phishing" if phishing_prob > safe_prob else "legitimate"
+
+    return result, phishing_prob, safe_prob
