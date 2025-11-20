@@ -31,7 +31,7 @@ def load_and_prepare_dataset(sample_frac=1.0):
     return df
 
 # --- Training function ---
-def train_model(sample_frac=1.0, batch_size=8, epochs=1, lr=2e-5):
+def train_model(sample_frac=1.0, batch_size=16, epochs=1, lr=2e-5):
     global training_in_progress, model, tokenizer
     training_in_progress = True
     print("--- Starting DistilBERT Model Training ---")
@@ -54,7 +54,12 @@ def train_model(sample_frac=1.0, batch_size=8, epochs=1, lr=2e-5):
         max_length=MAX_LEN,
         return_tensors="pt"
     )
-    val_encodings = tokenizer(val_df['email_text'].tolist(), truncation=True, padding=True, max_length=MAX_LEN)
+    val_encodings = tokenizer(
+        val_df['email_text'].tolist(),
+        truncation=True,
+        padding=True,
+        max_length=MAX_LEN
+    )
 
     train_labels = train_df['label'].tolist()
     val_labels = val_df['label'].tolist()
@@ -129,7 +134,7 @@ def load_trained_model():
 # --- Quick test helper ---
 def quick_test_train():
     """Train on 1% of dataset for fast testing."""
-    train_model(sample_frac=0.01, batch_size=4, epochs=1)
+    train_model(sample_frac=0.01, batch_size=16, epochs=1)
 
 # --- Prediction ---
 def predict_email(email_text):
@@ -142,7 +147,8 @@ def predict_email(email_text):
     model.eval()
     with torch.no_grad():
         outputs = model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=-1).cpu().numpy()[0]
+        logits = outputs.logits.detach().cpu()
+        probs = torch.softmax(logits, dim=-1).numpy()[0]  # 2 numbers per email
         phishing_prob = float(probs[1])
         safe_prob = float(probs[0])
         result = "phishing" if phishing_prob > safe_prob else "legitimate"

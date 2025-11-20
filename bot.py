@@ -1,13 +1,13 @@
-# bot.py (Updated and Fixed)
-
+# bot.py
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from model import predict_email, training_in_progress  # Import the necessary functions/variables
+from model import predict_email, training_in_progress  # Make sure this exists
+
+import asyncio
 
 # --- Telegram Bot Handlers ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a welcome message when the command /start is issued."""
     await update.message.reply_text(
         "👋 Welcome! I'm a **Phishing Detector Bot**.\n"
         "Send me the **full text** of an email and I will analyze it for potential phishing threats.\n"
@@ -15,9 +15,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode='Markdown'
     )
 
-
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reports the current training status of the AI model."""
     if training_in_progress:
         await update.message.reply_text(
             "⏳ The AI model is currently **training** in the background.\n"
@@ -31,27 +29,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode='Markdown'
         )
 
-
 async def handle_email_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Analyzes the received text using the trained model, with integer percentages."""
     user_text = update.message.text
 
     if training_in_progress:
         await update.message.reply_text("Model is still training... please try again shortly.")
         return
 
-    # Acknowledge receipt
     await update.message.reply_text("Analyzing email text... 🕵️‍♀️ Please wait a moment.")
 
-    # Call the prediction function from model.py
-    # Ensure predict_email returns (result:str, phishing_prob:float, safe_prob:float)
+    # Prediction
     result, phishing_prob, safe_prob = predict_email(user_text)
-
-    # Convert floats (0-1) to integer percentages
     phishing_percent = int(round(phishing_prob * 100))
     safe_percent = int(round(safe_prob * 100))
 
-    # --- Response Generation ---
     if result == "phishing":
         response_text = (
             f"🛑 **PHISHING ALERT!** 🛑\n\n"
@@ -78,12 +69,10 @@ async def handle_email_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         response_text = f"An error occurred during analysis: {result}"
 
-    # Send the final response
     await update.message.reply_text(response_text, parse_mode='Markdown')
 
-
 def start_bot(token: str):
-    """Initializes and runs the Telegram bot using the async-safe Application builder."""
+    """Initializes and runs the Telegram bot using the Application builder."""
     application = Application.builder().token(token).build()
 
     # Add handlers
@@ -92,4 +81,6 @@ def start_bot(token: str):
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_text))
 
     print("Bot is polling... Press Ctrl-C to stop.")
+    # Run the bot synchronously (do NOT await)
     application.run_polling()
+
