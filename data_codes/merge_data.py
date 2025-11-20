@@ -4,7 +4,7 @@ import sys
 
 # --- CONFIGURATION ---
 # Assumes the merged file is saved here from the previous step
-FINAL_MERGED_FILE = os.path.join('final_data', 'all_phishing_master_dataset.csv')
+FINAL_MERGED_FILE = os.path.join('../final_data', 'all_phishing_master_dataset.csv')
 
 
 def check_phishing_percentage(file_path):

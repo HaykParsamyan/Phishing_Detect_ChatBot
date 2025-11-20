@@ -4,8 +4,8 @@ import glob
 import sys
 
 # --- CONFIGURATION ---
-CLEANED_DATA_DIR = 'cleaned_data'
-FINAL_MERGED_FILE = os.path.join('final_data', 'all_phishing_master_dataset.csv')
+CLEANED_DATA_DIR = '../cleaned_data'
+FINAL_MERGED_FILE = os.path.join('../final_data', 'all_phishing_master_dataset.csv')
 
 # --- CORE COLUMNS FOR ALIGNMENT ---
 # All files must have these three columns
