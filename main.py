@@ -14,7 +14,7 @@ def main():
 
     if not load_trained_model():
         print("No trained model found. Training...")
-        train_model(sample_frac=1.0)  # Train on 100% of data
+        train_model(sample_frac=0.01)  # Train on 100% of data
         print("Training complete!")
 
     print("Starting Telegram bot...")
