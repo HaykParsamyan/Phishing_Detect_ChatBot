@@ -1,7 +1,8 @@
 # bot.py
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from model import predict_email, training_in_progress  # Make sure this exists
+from my_model.predict import predict_email
+from my_model.model_manager import training_in_progress  # moved to separate module
 
 import asyncio
 
@@ -81,6 +82,4 @@ def start_bot(token: str):
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_text))
 
     print("Bot is polling... Press Ctrl-C to stop.")
-    # Run the bot synchronously (do NOT await)
     application.run_polling()
-

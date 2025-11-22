@@ -6,7 +6,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # data_codes folder
 DATA_PATH = os.path.join(BASE_DIR, "..", "final_data", "all_phishing_master_dataset.csv")
 
 # --- Configuration ---
-SAMPLE_FRAC = 0.5  # 50% of dataset
+SAMPLE_FRAC = 1.0  # 50% of dataset
 
 # --- Load dataset ---
 print(f"Loading dataset from {DATA_PATH}...")
