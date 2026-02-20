@@ -1,8 +1,0 @@
-pandas
-numpy
-torch>=2.0.0
-transformers
-scikit-learn
-tqdm
-python-telegram-bot>=20.0
-python-dotenv
