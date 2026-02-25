@@ -1,28 +1,28 @@
 # main.py
+import os
 from my_model.model_manager import load_trained_model
 from my_model.train import train_model
 from bot import start_bot
-import os
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    "7716630538:AAE_Gac-S4nfeYkXEmOnJStD5kyQlIuOvt8"
-)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in environment variables.")
 
 def main():
     print("--- Phishing Detector Bot ---")
-
     print("Checking for trained model...")
-    model_loaded = load_trained_model()
 
-    if not model_loaded:
-        print("No trained model found. Starting training...")
-        train_model(sample_frac=0.01, epochs=1)  # Use smaller sample for quick test
-        print("Training complete!")
-        # Reload model after training
+    try:
+        load_trained_model()
+        print("✅ Model loaded from disk.")
+    except RuntimeError as e:
+        print(f"⚠️ No trained model found: {e}")
+        print("➡️ Training a small sample (1%) to verify everything works...")
+        train_model(sample_frac=0.01, batch_size=2, epochs=1, lr=2e-5)
+        print("✅ Training complete. Reloading model...")
         load_trained_model()
 
-    print("Model is loaded. Starting Telegram bot...")
+    print("🚀 Model is loaded. Starting Telegram bot...")
     start_bot(TELEGRAM_BOT_TOKEN)
 
 if __name__ == "__main__":
