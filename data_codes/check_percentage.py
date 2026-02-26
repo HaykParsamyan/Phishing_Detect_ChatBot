@@ -1,37 +1,34 @@
-import pandas as pd
 import os
+import pandas as pd
 
-# --- Paths ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # data_codes folder
-DATA_PATH = os.path.join(BASE_DIR, "..", "final_data", "all_phishing_master_dataset.csv")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(BASE_DIR, "final_data", "merged_email_url_dataset_ai.csv")
 
-# --- Configuration ---
-SAMPLE_FRAC = 1.0  # 50% of dataset
+def main():
+    df = pd.read_csv(DATA_PATH, low_memory=False)
 
-# --- Load dataset ---
-print(f"Loading dataset from {DATA_PATH}...")
-df = pd.read_csv(DATA_PATH, low_memory=False)
+    if "label" not in df.columns:
+        raise ValueError("Dataset does not contain 'label' column")
 
-# --- Take 50% sample ---
-sample_df = df.sample(frac=SAMPLE_FRAC, random_state=42)
-print(f"Sampled {len(sample_df)} rows ({SAMPLE_FRAC*100}% of dataset)")
+    # Convert safely
+    df["label"] = pd.to_numeric(df["label"], errors="coerce")
+    df = df.dropna(subset=["label"])
+    df["label"] = df["label"].astype(int)
 
-# --- Check label distribution ---
-if 'label' not in sample_df.columns:
-    raise ValueError("The dataset does not contain a 'label' column. Update the column name accordingly.")
+    counts = df["label"].value_counts().sort_index()
 
-label_counts = sample_df['label'].value_counts()
-label_percent = sample_df['label'].value_counts(normalize=True) * 100
+    phishing = counts.get(1, 0)
+    legitimate = counts.get(0, 0)
 
-print("\n--- Label Counts ---")
-for label, count in label_counts.items():
-    print(f"{label}: {count} rows")
+    total = len(df)
 
-print("\n--- Label Percentages ---")
-for label, perc in label_percent.items():
-    print(f"{label}: {perc:.2f}%")
+    print("\n===== LABEL DISTRIBUTION =====")
+    print(f"Total samples:      {total}")
+    print(f"Legitimate (0):     {legitimate}")
+    print(f"Phishing   (1):     {phishing}")
+    print("\nPercentages:")
+    print(f"Legitimate: {legitimate / total * 100:.2f}%")
+    print(f"Phishing:   {phishing / total * 100:.2f}%")
 
-print("\n✅ Summary Complete ✅")
-print(f"Total sample size: {len(sample_df)}")
-print(f"Phishing emails: {label_counts.get(1, 0)} ({label_percent.get(1, 0):.2f}%)")
-print(f"Legitimate emails: {label_counts.get(0, 0)} ({label_percent.get(0, 0):.2f}%)")
+if __name__ == "__main__":
+    main()

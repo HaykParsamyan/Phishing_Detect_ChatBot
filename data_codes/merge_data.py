@@ -1,71 +1,67 @@
-import pandas as pd
 import os
-import sys
+import pandas as pd
 
-# --- CONFIGURATION ---
-# Assumes the merged file is saved here from the previous step
-FINAL_MERGED_FILE = os.path.join('../final_data', 'all_phishing_master_dataset.csv')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+NEW_DATA = os.path.join(BASE_DIR, "cleaned_data", "dataset.csv")
+FINAL_DATA = os.path.join(BASE_DIR, "final_data", "merged_email_url_dataset.csv")
 
-def check_phishing_percentage(file_path):
-    """
-    Reads the final dataset and calculates the percentage of phishing (1) 
-    and legitimate (0) samples.
-    """
-    print(f"--- Checking data balance for: {file_path} ---")
+def main():
+    print("Loading cleaned dataset...")
+    new_df = pd.read_csv(NEW_DATA, low_memory=False)
 
-    # 1. Read the final merged CSV file
-    try:
-        df = pd.read_csv(file_path, low_memory=False, encoding='utf-8')
-    except FileNotFoundError:
-        print(f"🛑 Error: Final merged file not found at {file_path}.")
-        print("Please ensure you ran 'merge_all_cleaned_data.py' successfully.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"🛑 Error reading file: {e}")
-        sys.exit(1)
+    print("Loading final dataset...")
+    final_df = pd.read_csv(FINAL_DATA, low_memory=False)
 
-    total_rows = len(df)
-    if total_rows == 0:
-        print("⚠️ Warning: Dataset is empty. Cannot calculate percentage.")
-        return
+    # Required structure
+    required_cols = ["body", "subject", "label"]
 
-    # 2. Count the labels
-    # We ensure the label column is treated as categorical/integer
-    label_counts = df['label'].value_counts(dropna=False)
+    for col in required_cols:
+        if col not in new_df.columns:
+            raise ValueError(f"New dataset missing column: {col}")
+        if col not in final_df.columns:
+            raise ValueError(f"Final dataset missing column: {col}")
 
-    # Define counts for required categories
-    phishing_count = label_counts.get(1, 0)
-    legitimate_count = label_counts.get(0, 0)
+    # Keep only correct columns
+    new_df = new_df[required_cols].copy()
+    final_df = final_df[required_cols].copy()
 
-    # Check for any unmapped labels (NaN/others)
-    unmapped_count = total_rows - (phishing_count + legitimate_count)
+    # Clean text
+    for col in ["body", "subject"]:
+        new_df[col] = new_df[col].fillna("").astype(str).str.strip()
+        final_df[col] = final_df[col].fillna("").astype(str).str.strip()
 
-    # 3. Calculate Percentages
-    phishing_percent = (phishing_count / total_rows) * 100
-    legitimate_percent = (legitimate_count / total_rows) * 100
+    # Clean labels
+    new_df["label"] = pd.to_numeric(new_df["label"], errors="coerce")
+    final_df["label"] = pd.to_numeric(final_df["label"], errors="coerce")
 
-    # 4. Display Results
-    print(f"\nTotal Samples in Dataset: {total_rows}")
-    print("\n## ⚖️ Phishing/Legitimate Data Balance")
-    print("-------------------------------------------------------")
+    new_df = new_df.dropna(subset=["label"])
+    final_df = final_df.dropna(subset=["label"])
 
-    print(f"**Phishing (Label 1):** {phishing_count:10,} rows | **{phishing_percent:.2f}%**")
-    print(f"**Legitimate (Label 0):** {legitimate_count:8,} rows | **{legitimate_percent:.2f}%**")
+    new_df["label"] = new_df["label"].astype(int)
+    final_df["label"] = final_df["label"].astype(int)
 
-    if unmapped_count > 0:
-        unmapped_percent = (unmapped_count / total_rows) * 100
-        print(f"\n**⚠️ Unmapped/Null Labels:** {unmapped_count:8,} rows | **{unmapped_percent:.2f}%**")
-        print("   (These rows should be reviewed if the percentage is significant.)")
+    print("Before merge size:", len(final_df))
 
-    # 5. Provide a conclusion
-    if 45 <= phishing_percent <= 55:
-        print("\nConclusion: The dataset is **well-balanced**. Great job!")
-    elif phishing_percent < 45 or phishing_percent > 55:
-        print("\nConclusion: The dataset shows some **class imbalance**.")
-        print(
-            "   Consider techniques like oversampling the minority class or using class weights during model training.")
+    # Merge
+    combined = pd.concat([final_df, new_df], ignore_index=True)
+
+    # Remove duplicates (based on text + label)
+    combined["dedup_key"] = (
+        combined["subject"].astype(str) + " " +
+        combined["body"].astype(str)
+    ).str.strip()
+
+    combined = combined.drop_duplicates(subset=["dedup_key", "label"])
+    combined = combined.drop(columns=["dedup_key"])
+
+    print("After merge size:", len(combined))
+    print("Label distribution:\n", combined["label"].value_counts())
+
+    # Save
+    combined.to_csv(FINAL_DATA, index=False)
+    print("Saved updated final dataset to:", FINAL_DATA)
 
 
-if __name__ == '__main__':
-    check_phishing_percentage(FINAL_MERGED_FILE)
+if __name__ == "__main__":
+    main()
