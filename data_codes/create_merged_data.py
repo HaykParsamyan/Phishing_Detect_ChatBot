@@ -1,102 +1,134 @@
+import re
+from pathlib import Path
 import pandas as pd
-import os
-import glob
-import sys
 
-# --- CONFIGURATION ---
-CLEANED_DATA_DIR = '../cleaned_data'
-FINAL_MERGED_FILE = os.path.join('../final_data', 'all_phishing_master_dataset.csv')
+# ================== CONFIG ==================
+LABEL_COL = "label"
+TEXT_COL = "body"   # change if your column name is different
 
-# --- CORE COLUMNS FOR ALIGNMENT ---
-# All files must have these three columns
-REQUIRED_COLUMNS = ['body', 'label', 'subject']
+TARGET_PHISH = 0.55
+TARGET_LEGIT = 0.45
 
+RANDOM_SEED = 42
 
-def merge_all_datasets():
-    """
-    Reads all CSV files from the cleaned_data directory, aligns their columns,
-    merges them into a single DataFrame, handles duplicates, and saves the final result.
-    """
-    print("--- Starting Final Data Merge ---")
+# Input/Output (script is in data_codes/)
+BASE_DIR = Path(__file__).resolve().parent                 # .../data_codes
+PROJECT_DIR = BASE_DIR.parent                              # .../Phishing_Detector_AI
+INPUT_PATH = PROJECT_DIR / "final_data" / "merged_email_url_dataset_ai.csv" # change filename if needed
+OUTPUT_PATH = PROJECT_DIR / "final_data" / "final_data_balanced_55_45.csv"
+# ===========================================
 
-    # 1. Find all cleaned CSV files
-    search_path = os.path.join(CLEANED_DATA_DIR, '*.csv')
-    file_list = glob.glob(search_path)
+url_regex = re.compile(r"(https?://|www\.)", re.IGNORECASE)
 
-    if not file_list:
-        print(f"🛑 Error: No CSV files found in the directory: {CLEANED_DATA_DIR}")
-        print("Please ensure your previous processing scripts ran successfully.")
-        sys.exit(1)
+def detect_type(x) -> str:
+    """Classify row content roughly as url vs email text."""
+    if not isinstance(x, str):
+        return "unknown"
+    s = x.strip()
+    if url_regex.search(s):
+        return "url"
+    return "email"
 
-    print(f"Found {len(file_list)} files to merge:")
-    for f in file_list:
-        print(f"  - {os.path.basename(f)}")
+def main():
+    if not INPUT_PATH.exists():
+        raise FileNotFoundError(
+            f"Dataset not found:\n{INPUT_PATH}\n"
+            f"Fix INPUT_PATH filename or put your csv into final_data/"
+        )
 
-    all_dataframes = []
+    df = pd.read_csv(INPUT_PATH)
 
-    # 2. Load and Prepare Each File
-    for file_path in file_list:
-        file_name = os.path.basename(file_path)
+    # Validate columns
+    missing = [c for c in [LABEL_COL, TEXT_COL] if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing columns: {missing}\n"
+            f"Your columns are: {list(df.columns)}\n"
+            f"Fix LABEL_COL / TEXT_COL at the top."
+        )
 
-        try:
-            # Read the file
-            df = pd.read_csv(file_path, low_memory=False, encoding='utf-8')
+    # Keep only labels 0/1
+    df = df[df[LABEL_COL].isin([0, 1])].copy()
 
-            # Ensure the required columns exist, adding them with NaN if missing
-            for col in REQUIRED_COLUMNS:
-                if col not in df.columns:
-                    df[col] = pd.NA
+    # Add type column (url/email)
+    df["data_type"] = df[TEXT_COL].apply(detect_type)
 
-            # Standardize label column to the correct integer type
-            df['label'] = pd.to_numeric(df['label'], errors='coerce').astype('Int64')
+    legit = df[df[LABEL_COL] == 0].copy()
+    phish = df[df[LABEL_COL] == 1].copy()
 
-            # Ensure body is a string
-            df['body'] = df['body'].astype(str)
+    L = len(legit)
+    P = len(phish)
 
-            # Add a source column for tracking (optional, but helpful)
-            df['source_file'] = file_name
+    if L == 0 or P == 0:
+        raise ValueError(f"Bad dataset: legit={L}, phish={P}. You need both classes.")
 
-            all_dataframes.append(df)
-            print(f"  Loaded {len(df)} rows from {file_name}")
+    # Keep all legit, compute needed phishing to reach target ratio
+    P_target = int(round(L * (TARGET_PHISH / TARGET_LEGIT)))
 
-        except Exception as e:
-            print(f"🛑 Error loading/preparing {file_name}: {e}. Skipping this file.")
+    if P_target > P:
+        raise ValueError(
+            f"Not enough phishing to reach target.\nHave phishing={P}, need={P_target}."
+        )
 
-    if not all_dataframes:
-        print("🛑 No DataFrames were successfully loaded. Merge aborted.")
-        return
+    print("===== CURRENT DISTRIBUTION =====")
+    print(f"Total: {L+P}")
+    print(f"Legit (0): {L} ({L/(L+P)*100:.2f}%)")
+    print(f"Phish (1): {P} ({P/(L+P)*100:.2f}%)")
 
-    # 3. Concatenate all DataFrames
-    # pd.concat handles the alignment of columns automatically, filling missing ones with NaN
-    df_merged = pd.concat(all_dataframes, ignore_index=True)
-    initial_rows = len(df_merged)
+    print("\n===== TARGET =====")
+    print(f"Keep all legit: {L}")
+    print(f"Keep phishing:  {P_target} (downsample from {P})")
 
-    # 4. Final Cleanup: Drop Duplicates and Nulls
+    # Sample phishing proportionally by type to preserve url/email mix
+    phish_type_counts = phish["data_type"].value_counts(dropna=False)
+    phish_type_props = phish_type_counts / phish_type_counts.sum()
 
-    # Drop rows where the 'body' (email/url text) is duplicated or null
-    df_merged.dropna(subset=['body', 'label'], inplace=True)
-    df_merged.drop_duplicates(subset=['body'], keep='first', inplace=True)
+    sampled_parts = []
+    for t, prop in phish_type_props.items():
+        k = int(round(P_target * prop))
+        subset = phish[phish["data_type"] == t]
 
-    final_rows = len(df_merged)
+        # If subset is tiny, just take all, but this shouldn't happen usually
+        k = min(k, len(subset))
+        if k > 0:
+            sampled_parts.append(subset.sample(n=k, random_state=RANDOM_SEED))
 
-    print(f"\n--- Merge Summary ---")
-    print(f"Initial combined rows: {initial_rows}")
-    print(f"Rows dropped (Duplicates/Null Body/Label): {initial_rows - final_rows}")
-    print(f"Final rows for training: {final_rows}")
+    phish_sampled = pd.concat(sampled_parts, ignore_index=True) if sampled_parts else phish.sample(
+        n=P_target, random_state=RANDOM_SEED
+    )
 
-    # 5. Save the Final Master Dataset
+    # Fix rounding mismatch exactly to P_target
+    if len(phish_sampled) > P_target:
+        phish_sampled = phish_sampled.sample(n=P_target, random_state=RANDOM_SEED)
+    elif len(phish_sampled) < P_target:
+        need = P_target - len(phish_sampled)
+        # add extra from remaining phishing not already selected (approx)
+        extra_pool = phish.copy()
+        extra = extra_pool.sample(n=min(need, len(extra_pool)), random_state=RANDOM_SEED)
+        phish_sampled = pd.concat([phish_sampled, extra], ignore_index=True)
+        # ensure exact
+        phish_sampled = phish_sampled.sample(n=P_target, random_state=RANDOM_SEED)
 
-    # Ensure the output directory exists
-    os.makedirs(os.path.dirname(FINAL_MERGED_FILE), exist_ok=True)
+    # Combine and shuffle
+    balanced = pd.concat([legit, phish_sampled], ignore_index=True)
+    balanced = balanced.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
 
-    # Select the core columns first for easy access
-    core_cols = REQUIRED_COLUMNS + [col for col in df_merged.columns if col not in REQUIRED_COLUMNS]
-    df_merged = df_merged[core_cols]
+    # Final stats
+    final_counts = balanced[LABEL_COL].value_counts().sort_index()
+    total = len(balanced)
 
-    df_merged.to_csv(FINAL_MERGED_FILE, index=False, encoding='utf-8')
+    print("\n===== FINAL DISTRIBUTION =====")
+    print(f"Total: {total}")
+    print(f"Legit (0): {final_counts.get(0,0)} ({final_counts.get(0,0)/total*100:.2f}%)")
+    print(f"Phish (1): {final_counts.get(1,0)} ({final_counts.get(1,0)/total*100:.2f}%)")
 
-    print(f"\n✅ Merge Complete! Master dataset saved to: {FINAL_MERGED_FILE}")
+    print("\n===== TYPE MIX (FINAL) =====")
+    print(balanced.groupby([LABEL_COL, "data_type"]).size())
 
+    # Save
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    balanced.drop(columns=["data_type"]).to_csv(OUTPUT_PATH, index=False)
+    print("\nSaved to:", OUTPUT_PATH)
 
-if __name__ == '__main__':
-    merge_all_datasets()
+if __name__ == "__main__":
+    main()

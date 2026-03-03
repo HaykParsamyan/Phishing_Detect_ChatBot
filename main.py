@@ -17,8 +17,8 @@ def main():
         print("✅ Model loaded from disk.")
     except RuntimeError as e:
         print(f"⚠️ No trained model found: {e}")
-        print("➡️ Training a small sample (1%) to verify everything works...")
-        train_model(sample_frac=1.0, batch_size=4, epochs=3, lr=2e-5, accumulation_steps=4)
+        print("➡️ Training  to verify everything works...")
+        train_model(sample_frac=1.0, batch_size=2, epochs=3, lr=2e-5, accumulation_steps=8)
         print("✅ Training complete. Reloading model...")
         load_trained_model()
 

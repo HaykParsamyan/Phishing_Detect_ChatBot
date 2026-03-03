@@ -1,49 +1,37 @@
-import os
+from pathlib import Path
 import pandas as pd
 
-# ============================
-# PATH SETUP
-# ============================
+# ================= CONFIG =================
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+FILE_PATH = PROJECT_DIR / "cleaned_data" / "dataset.csv"  # change if needed
+LABEL_COL = "label"
+# ==========================================
 
-INPUT_PATH = os.path.join(
-    PROJECT_ROOT,
-    "final_data",
-    "all_phishing_master_dataset_ai_filled.csv"
-)
+def main():
+    if not FILE_PATH.exists():
+        raise FileNotFoundError(f"File not found: {FILE_PATH}")
 
-OUTPUT_PATH = os.path.join(
-    PROJECT_ROOT,
-    "final_data",
-    "all_phishing_master_dataset_final.csv"
-)
+    df = pd.read_csv(FILE_PATH)
 
-# ============================
-# LOAD DATA
-# ============================
+    if LABEL_COL not in df.columns:
+        raise ValueError(f"'label' column not found. Columns: {list(df.columns)}")
 
-df = pd.read_csv(INPUT_PATH)
+    total = len(df)
+    null_count = df[LABEL_COL].isna().sum()
+    not_null_count = total - null_count
 
-print("Columns before:")
-print(df.columns)
+    print("===== LABEL NULL CHECK =====")
+    print("Total rows:", total)
+    print("Null labels:", null_count)
+    print("Non-null labels:", not_null_count)
 
-# ============================
-# DROP COLUMN
-# ============================
+    if total > 0:
+        print(f"Null percentage: {(null_count/total)*100:.4f}%")
 
-if "source_file" in df.columns:
-    df = df.drop(columns=["source_file"])
-    print("\n'source_file' column removed.")
-else:
-    print("\n'source_file' column not found.")
+    print("\n===== FULL LABEL DISTRIBUTION (including NaN) =====")
+    print(df[LABEL_COL].value_counts(dropna=False))
 
-# ============================
-# SAVE CLEAN DATASET
-# ============================
-
-df.to_csv(OUTPUT_PATH, index=False)
-
-print("\nSaved cleaned dataset to:")
-print(OUTPUT_PATH)
+if __name__ == "__main__":
+    main()

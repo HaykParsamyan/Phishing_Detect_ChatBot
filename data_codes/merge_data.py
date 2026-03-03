@@ -1,67 +1,49 @@
-import os
+from pathlib import Path
 import pandas as pd
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ================= CONFIG =================
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
 
-NEW_DATA = os.path.join(BASE_DIR, "cleaned_data", "dataset.csv")
-FINAL_DATA = os.path.join(BASE_DIR, "final_data", "merged_email_url_dataset.csv")
+FILE_1 = PROJECT_DIR / "cleaned_data" / "CEAS_08_minimal_processed.csv"
+FILE_2 = PROJECT_DIR / "cleaned_data" / "dataset.csv"
+
+OUTPUT_FILE = PROJECT_DIR / "cleaned_data" / "merged_dataset.csv"
+# ==========================================
 
 def main():
-    print("Loading cleaned dataset...")
-    new_df = pd.read_csv(NEW_DATA, low_memory=False)
+    if not FILE_1.exists():
+        raise FileNotFoundError(f"Missing file: {FILE_1}")
+    if not FILE_2.exists():
+        raise FileNotFoundError(f"Missing file: {FILE_2}")
 
-    print("Loading final dataset...")
-    final_df = pd.read_csv(FINAL_DATA, low_memory=False)
+    print("Loading datasets...")
+    df1 = pd.read_csv(FILE_1)
+    df2 = pd.read_csv(FILE_2)
 
-    # Required structure
-    required_cols = ["body", "subject", "label"]
+    print("File 1 shape:", df1.shape)
+    print("File 2 shape:", df2.shape)
 
-    for col in required_cols:
-        if col not in new_df.columns:
-            raise ValueError(f"New dataset missing column: {col}")
-        if col not in final_df.columns:
-            raise ValueError(f"Final dataset missing column: {col}")
+    # Check if columns match
+    if list(df1.columns) != list(df2.columns):
+        print("\n⚠ WARNING: Column mismatch detected.")
+        print("File 1 columns:", list(df1.columns))
+        print("File 2 columns:", list(df2.columns))
+        raise ValueError("Columns do not match. Fix column names before merging.")
 
-    # Keep only correct columns
-    new_df = new_df[required_cols].copy()
-    final_df = final_df[required_cols].copy()
+    print("\nMerging...")
+    merged = pd.concat([df1, df2], ignore_index=True)
 
-    # Clean text
-    for col in ["body", "subject"]:
-        new_df[col] = new_df[col].fillna("").astype(str).str.strip()
-        final_df[col] = final_df[col].fillna("").astype(str).str.strip()
+    print("Before duplicate removal:", merged.shape)
 
-    # Clean labels
-    new_df["label"] = pd.to_numeric(new_df["label"], errors="coerce")
-    final_df["label"] = pd.to_numeric(final_df["label"], errors="coerce")
+    merged = merged.drop_duplicates()
 
-    new_df = new_df.dropna(subset=["label"])
-    final_df = final_df.dropna(subset=["label"])
+    print("After duplicate removal:", merged.shape)
 
-    new_df["label"] = new_df["label"].astype(int)
-    final_df["label"] = final_df["label"].astype(int)
+    merged.to_csv(OUTPUT_FILE, index=False)
 
-    print("Before merge size:", len(final_df))
-
-    # Merge
-    combined = pd.concat([final_df, new_df], ignore_index=True)
-
-    # Remove duplicates (based on text + label)
-    combined["dedup_key"] = (
-        combined["subject"].astype(str) + " " +
-        combined["body"].astype(str)
-    ).str.strip()
-
-    combined = combined.drop_duplicates(subset=["dedup_key", "label"])
-    combined = combined.drop(columns=["dedup_key"])
-
-    print("After merge size:", len(combined))
-    print("Label distribution:\n", combined["label"].value_counts())
-
-    # Save
-    combined.to_csv(FINAL_DATA, index=False)
-    print("Saved updated final dataset to:", FINAL_DATA)
-
+    print("\nSaved merged dataset to:")
+    print(OUTPUT_FILE)
 
 if __name__ == "__main__":
     main()
